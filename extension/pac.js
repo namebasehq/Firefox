@@ -20,7 +20,7 @@ function propCount(o) {
 
 function FindProxyForURL(url, host) {
   // ** ON CHANGES HERE ALSO UPDATE Chrome's bdns.js **
-  var res = 'DIRECT 4444';
+  var res = 'DIRECT';
   var ips = cache[host];
 
   if (ips) {

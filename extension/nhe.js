@@ -109,17 +109,18 @@ cache.onDomainDelete = function (domain) {
   signalPAC(domain);
 }
 
-browser.proxy.registerProxyScript('pac.js');
+const proxyScriptURL = "pac.js";
+browser.proxy.register(proxyScriptURL);
 
 browser.proxy.onProxyError.addListener(function (error) {
-  console.error('BDNS: PAC error: ' + error.message);
+  console.error('NHE: PAC error: ' + error.message);
 });
 
 browser.webRequest.onCompleted.addListener(function (details) {
   var url = parseURL(details.url);
 
   if (url) {
-    console.log('BDNS: #' + details.requestId + ' (' + url.domain + '): completed, ' + details.statusCode); //-
+    console.log('NHE: #' + details.requestId + ' (' + url.domain + '): completed, ' + details.statusCode); //-
 
     // Keep visiting IPs in cache (see the note about update() on top).
     cache.setVisited(url.domain);
@@ -127,79 +128,32 @@ browser.webRequest.onCompleted.addListener(function (details) {
 }, allURLs);
 
 browser.webRequest.onBeforeRequest.addListener(function (details) {
-  //console.dir(details);
-
   var url = parseURL(details.url);
 
-  if (url) {
-    var ips = cache.ips(url.domain);
+  if (!url || !url.tld || isNormalURL(url)) {
+    return;
+  }
 
-    if (ips) {
-      console.log('BDNS: #' + details.requestId + ' (' + url.domain + '): already resolved to ' + ips + '; cache size = ' + cache.length); //-
+  var ips = cache.ips(url.domain);
 
-      if (ips.length) {
-        // Return nothing to let browser use PAC's proxy. However, in some cases
-        // the browser performs DNS lookup on url.domain before using PAC anyway.
-        // The reason is unknown.
-      } else {
-        showNotification('Non-existent .' + url.tld + ' domain: ' + url.domain);
-        return {cancel: true};
+  if (ips) {
+    console.log('NHE: #' + details.requestId + ' (' + url.domain + '): already resolved to ' + ips + '; cache size = ' + cache.length); //-
+  } else {
+    console.log('NHE: #' + details.requestId + ' (' + url.domain + '): resolving, full URL: ' + url.url); //-
+
+    resolveViaAPI(url.domain, false, function (ips) {
+      if (ips && ips.length) {
+        cache.set(url.domain, ips);
       }
-    } else {
-      console.log('BDNS: #' + details.requestId + ' (' + url.domain + '): resolving at ' + (new Date).toTimeString() + ', full URL: ' + url.url); //-
-
-      return new Promise(function (resolve, reject) {
-        resolveViaAPI(url.domain, true, function (ips) {
-          if (!ips) {
-            showNotification('Resolution of .' + url.tld + ' is temporary unavailable');
-            rotateApiHost();
-
-            if (!details.originUrl) {
-              // Add to tracked requests so that subsequent NS_ERROR_ABORT will
-              // trigger page reload and a repeated request to another API domain.
-              startedReqs[details.requestId] = details;
-              details._bdns_delayed = true;
-            }
-          } else if (!ips.length) {
-            cache.set(url.domain, []);
-            showNotification('Non-existent .' + url.tld + ' domain: ' + url.domain);
-          } else {
-            cache.set(url.domain, ips);
-
-            console.log('BDNS: #' + details.requestId + ': originUrl: ' + details.originUrl); //-
-
-            // This check is supposed to inform the user when a page embeds a resource
-            // (e.g. <img>) from a B-TLD that wasn't yet resolved. But Firefox does not
-            // call onBeforeRequest for resources at all while calling it when following
-            // <a> to a page on an unresolved B-TLD (and setting originUrl so these two
-            // cases cannot be told apart). Nuts...
-            //
-            // Right now it works without side effects, but if this behavior changes
-            // - embedded resources will cause origin tab to be reloaded repeatedly
-            // until all their domains are resolved.
-            //if (!details.originUrl) {
-              startedReqs[details.requestId] = details;
-            //} else {
-            //  var originHost = parseURL(details.originUrl).domain;
-            //  showNotification(originHost + ' references a resource at ' + url.domain, 'The referenced resource will be unavailable until you reload this page.');
-            //}
-          }
-
-          // Do it after XHR has finished, not in onBeforeRequest for better UX
-          // (user sees loading spinner while the domain is being resolved).
-          resolve({cancel: true});
-        });
-      });
-    }
+    });
   }
 }, allURLs, ['blocking']);
 
 browser.webRequest.onErrorOccurred.addListener(function (details) {
-  //console.dir(details);
 
   var req = details.requestId;
   var url = parseURL(details.url);
-  console.log('BDNS: #' + req + ' (' + url.domain + '): ' + details.error); //-
+  console.log('NHE: #' + req + ' (' + url.domain + '): ' + details.error); //-
 
   // NS_BINDING_ABORTED - User-cancelled.
   switch (details.error) {
@@ -235,7 +189,7 @@ browser.webRequest.onErrorOccurred.addListener(function (details) {
       showNotification(url.domain + ' ' + msg);
 
       if (cache.isExpired(url.domain, downCacheTTL)) {
-        console.log('BDNS: ' + url.domain + ': down, removing to refetch'); //-
+        console.log('NHE: ' + url.domain + ': down, removing to refetch'); //-
         cache.delete(url.domain);
       }
     }
@@ -248,23 +202,11 @@ browser.alarms.create({periodInMinutes: 1});
 
 browser.alarms.onAlarm.addListener(function () {
   var count = cache.prune();
-  console.log('BDNS: deleted ' + count + ' expired entries; cache size = ' + cache.length); //-
-});
-
-browser.tabs.onUpdated.addListener(function (id, changeInfo) {
-  var url = parseURL(changeInfo.url || '');
-
-  if (url) {
-    var supported = isSupportedTLD(url.tld);
-
-    console.info('BDNS: tab #' + id + ' updated to ' + (supported ? '' : 'un') + 'supported TLD, domain: ' + url.domain); //-
-
-    browser.browserAction[!supported ? 'enable' : 'disable'](id);
-  }
+  console.log('NHE: deleted ' + count + ' expired entries; cache size = ' + cache.length); //-
 });
 
 browser.browserAction.onClicked.addListener(function () {
   browser.tabs.create({
-    url: "https://blockchain-dns.info"
+    url: "https://namebase.io"
   });
 });
